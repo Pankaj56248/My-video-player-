@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Video Player</title>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/artplayer/dist/artplayer.js"></script>
+
+<style>
+  :root { --red: #ff0033; --ad: #ffcc00; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #fff;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+    font-family: Roboto, "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  }
+
+  #app { position: fixed; inset: 0; background: #000; }
+  .art-video-player { --art-theme: var(--red); }
+
+  video::cue {
+    background: rgba(0, 0, 0, .75);
+    color: #fff;
+    font-family: Roboto, Arial, sans-serif;
+  }
+
+  /* Empty / fatal state */
+  #empty {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px; text-align: center;
+  }
+  #empty h1 { margin: 0; font-size: 20px; font-weight: 500; }
+  #empty p { margin: 0; max-width: 420px; color: #aaa; font-size: 14px; line-height: 1.5; }
+  #empty code {
+    display: inline-block; margin-top: 4px; padding: 6px 10px;
+    background: #181818; border-radius: 6px; color: #fff;
+    font-size: 12px; word-break: break-all; -webkit-user-select: text; user-select: text;
+  }
+
+  /* Top bar: title + current quality, follows control visibility */
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 50;
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    padding: calc(12px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 28px calc(14px + env(safe-area-inset-left));
+    background: linear-gradient(to bottom, rgba(0,0,0,.7), rgba(0,0,0,0));
+    opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .art-video-player.art-control-show .topbar { opacity: 1; }
+  .topbar .title {
+    font-size: 15px; font-weight: 500; line-height: 1.3;
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .topbar .qbadge {
+    flex: none; padding: 2px 7px; border-radius: 4px;
+    background: rgba(255,255,255,.18); font-size: 12px; font-weight: 500;
+  }
+
+  /* Error overlay */
+  .err {
+    position: absolute; inset: 0; z-index: 900;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 24px; text-align: center;
+    background: rgba(0,0,0,.9);
+  }
+  .err p { margin: 0; max-width: 360px; font-size: 14px; line-height: 1.5; color: #ddd; }
+  .err button {
+    border: 0; border-radius: 18px; padding: 9px 22px;
+    background: #fff; color: #000; font-size: 14px; font-weight: 500; cursor: pointer;
+  }
+
+  /* Mid-roll ad overlay */
+  .ad {
+    position: absolute; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 42%, #202020 0%, #000 70%);
+    cursor: default;
+  }
+  .ad-video {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; background: #000;
+  }
+  .ad-card {
+    position: relative; width: 132px; height: 132px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  .ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 6; }
+  .ring-bg { stroke: rgba(255,255,255,.14); }
+  .ring-fg { stroke: var(--ad); stroke-linecap: round; stroke-dasharray: 326.73; stroke-dashoffset: 0; }
+  .ring-num { font-size: 42px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums; }
+  .ad-sub { margin-top: 6px; font-size: 12px; color: #bbb; }
+  .ad-bar {
+    position: absolute; left: 0; right: 0; bottom: 3px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 26px calc(14px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
+    background: linear-gradient(to top, rgba(0,0,0,.75), rgba(0,0,0,0));
+  }
+  .ad-badge {
+    padding: 2px 6px; border-radius: 3px;
+    background: var(--ad); color: #000; font-size: 12px; font-weight: 700;
+  }
+  .ad-timer { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .ad-link {
+    margin-left: 6px; border: 0; border-radius: 16px; padding: 7px 16px;
+    background: rgba(255,255,255,.18); color: #fff; font-size: 13px; cursor: pointer;
+  }
+  .ad-skip {
+    position: absolute; z-index: 2;
+    right: calc(14px + env(safe-area-inset-right));
+    bottom: calc(54px + env(safe-area-inset-bottom));
+    border: 1px solid rgba(255,255,255,.5); border-radius: 4px; padding: 10px 16px;
+    background: rgba(0,0,0,.7); color: #fff;
+    font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums;
+    cursor: default; pointer-events: none;
+  }
+  .ad-skip.ready { background: #fff; border-color: #fff; color: #000; cursor: pointer; pointer-events: auto; }
+  .ad-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.2); }
+  .ad-progress i { display: block; width: 0; height: 100%; background: var(--ad); }
+  .fb-frame { display: block; position: fixed; inset: 0; background: #000; height: 100vh; height: 100dvh !important; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<main id="empty" hidden>
+  <h1 id="emptyTitle">No video link found</h1>
+  <p id="emptyText">Open this page with a stream link in the address:</p>
+  <code>index.html?stream=https://example.com/master.m3u8</code>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ------------------------------------------------------------------
+   * 1. Telegram setup (runs immediately on page load)
+   * ------------------------------------------------------------------ */
+  var tg = window.Telegram && window.Telegram.WebApp;
+
+  function tgAtLeast(v) {
+    try { return !!(tg && tg.isVersionAtLeast && tg.isVersionAtLeast(v)); } catch (e) { return false; }
+  }
+
+  if (tg) {
+    try { tg.ready(); } catch (e) {}
+    try { tg.expand(); } catch (e) {}
+    try { if (tgAtLeast('6.1')) { tg.setHeaderColor('#000000'); tg.setBackgroundColor('#000000'); } } catch (e) {}
+    try { if (tgAtLeast('7.10')) tg.setBottomBarColor('#000000'); } catch (e) {}
+    try { if (tgAtLeast('7.7')) tg.disableVerticalSwipes(); } catch (e) {}
+  }
+  var inTelegram = !!(tg && tg.platform && tg.platform !== 'unknown');
+
+  /* ------------------------------------------------------------------
+   * 2. Config  (defaults + remote JSON, no code change needed for new ads)
+   *
+   *    The player fetches a JSON file on load (and every 5 minutes after):
+   *      default location : ads.json next to index.html
+   *      custom location  : ?config=https://.../ads.json   (needs CORS)
+   *    {
+   *      "ad_video_url": "https://.../ad.mp4",   video ad (mp4 / m3u8), empty = built-in screen
+   *      "ad_click_url": "https://...",          sponsor link, empty = no button
+   *      "midroll_interval_sec": 600,            first mid-roll ad time, 0 = off
+   *      "skip_timer_sec": 7,                    seconds before "Skip Ad" appears
+   *      "hourly_ad_enabled": true               extra ad at 1h, 2h, 3h ...
+   *    }
+   *    If the JSON cannot be fetched the built-in defaults below are used.
+   *    Test overrides: ?ad=<video url>  ?adlink=<sponsor url>
+   * ------------------------------------------------------------------ */
+  var DEFAULTS = {
+    ad_video_url: '',
+    ad_click_url: '',
+    midroll_interval_sec: 600,
+    skip_timer_sec: 7,
+    hourly_ad_enabled: true
+  };
+  var HOURLY_SEC = 3600;
+  var BUILTIN_AD_SEC = 15;   // length of the built-in "Sponsored break" screen
+
+  var params = new URLSearchParams(location.search);
+
+  function cleanUrl(v) {
+    if (typeof v !== 'string' || !v.trim()) return '';
+    try {
+      var u = new URL(v.trim(), location.href);
+      return (u.protocol === 'http:' || u.protocol === 'https:') ? u.href : '';
+    } catch (e) { return ''; }
+  }
+  function numIn(v, min, max, fallback) {
+    if (v === null || v === '' || typeof v === 'boolean') return fallback;
+    v = Number(v);
+    return (isFinite(v) && v >= min && v <= max) ? v : fallback;
+  }
+  function boolIn(v, fallback) {
+    if (v === true || v === 'true' || v === 1) return true;
+    if (v === false || v === 'false' || v === 0) return false;
+    return fallback;
+  }
+
+  var OVERRIDE = { ad: cleanUrl(params.get('ad')), adlink: cleanUrl(params.get('adlink')) };
+  var CONFIG = { adVideo: '', adClickUrl: '', midrollAt: 600, skipAfter: 7, hourly: true };
+  var adPoints = [];
+
+  function buildPoints() {
+    var pts = [];
+    if (CONFIG.midrollAt > 0) pts.push(CONFIG.midrollAt);
+    if (CONFIG.hourly) for (var h = HOURLY_SEC; h <= 86400; h += HOURLY_SEC) pts.push(h);
+    pts.sort(function (x, y) { return x - y; });
+    adPoints = pts.filter(function (v, i) { return i === 0 || v !== pts[i - 1]; });
+  }
+
+  function applyConfig(j) {
+    j = (j && typeof j === 'object') ? j : {};
+    CONFIG.adVideo = OVERRIDE.ad || cleanUrl(j.ad_video_url);
+    CONFIG.adClickUrl = OVERRIDE.adlink || cleanUrl(j.ad_click_url);
+    CONFIG.midrollAt = numIn(j.midroll_interval_sec, 0, 86400, DEFAULTS.midroll_interval_sec);
+    CONFIG.skipAfter = numIn(j.skip_timer_sec, 0, 60, DEFAULTS.skip_timer_sec);
+    CONFIG.hourly = boolIn(j.hourly_ad_enabled, DEFAULTS.hourly_ad_enabled);
+    buildPoints();
+  }
+  applyConfig(DEFAULTS);   // graceful fallback until (or unless) the remote JSON loads
+
+  function loadRemoteConfig() {
+    var target = cleanUrl(params.get('config') || 'ads.json');
+    if (!target) return;
+    var ctrl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 5000);
+    var url = target + (target.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now();
+    fetch(url, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) { clearTimeout(timer); applyConfig(j); })
+      .catch(function () { clearTimeout(timer); /* keep current values */ });
+  }
+
+  /* ------------------------------------------------------------------
+   * 3. Resolve stream URL
+   * ------------------------------------------------------------------ */
+  var KNOWN_KEYS = ['stream', 'url', 'src', 'video', 'title', 'ad', 'adlink', 'type', 'config', 'fallback'];
+
+  function decodeStartParam(s) {
+    try {
+      var b = String(s).replace(/-/g, '+').replace(/_/g, '/');
+      b += '='.repeat((4 - (b.length % 4)) % 4);
+      var bytes = Uint8Array.from(atob(b), function (c) { return c.charCodeAt(0); });
+      var u = new TextDecoder().decode(bytes);
+      return /^https?:\/\//i.test(u) ? u : null;
+    } catch (e) { return null; }
+  }
+
+  function resolveSource() {
+    var raw = null;
+    ['stream', 'url', 'src', 'video'].some(function (k) {
+      var v = params.get(k);
+      if (v) { raw = v; return true; }
+      return false;
+    });
+    if (!raw && tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) raw = decodeStartParam(tg.initDataUnsafe.start_param);
+    if (!raw && params.get('tgWebAppStartParam')) raw = decodeStartParam(params.get('tgWebAppStartParam'));
+    if (!raw) return null;
+
+    raw = raw.trim();
+    if (/^https?%3A/i.test(raw)) { try { raw = decodeURIComponent(raw); } catch (e) {} }
+
+    // Un-encoded stream URLs that carry their own ?token=..&exp=.. query
+    if (raw.indexOf('?') !== -1) {
+      params.forEach(function (v, k) {
+        if (KNOWN_KEYS.indexOf(k) === -1 && k.indexOf('tgWebApp') !== 0) {
+          raw += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(v);
+        }
+      });
+    }
+
+    try {
+      var u = new URL(raw);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      return u.href;
+    } catch (e) { return null; }
+  }
+
+  function showEmpty(title, text) {
+    document.getElementById('emptyTitle').textContent = title;
+    document.getElementById('emptyText').textContent = text;
+    document.getElementById('empty').hidden = false;
+    document.getElementById('app').hidden = true;
+  }
+
+  /* ---- Fallback mode: ?fallback=<page url> -> strictly sandboxed iframe ---- */
+  function resolveFallback() {
+    var raw = params.get('fallback');
+    if (!raw) return null;
+    raw = raw.trim();
+    if (/^https?%3A/i.test(raw)) { try { raw = decodeURIComponent(raw); } catch (e) {} }
+    if (raw.indexOf('?') !== -1) {
+      params.forEach(function (v, k) {
+        if (KNOWN_KEYS.indexOf(k) === -1 && k.indexOf('tgWebApp') !== 0) {
+          raw += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(v);
+        }
+      });
+    }
+    try {
+      var u = new URL(raw);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      // An http page cannot be framed inside this https page (mixed content): try https.
+      if (u.protocol === 'http:' && location.protocol === 'https:') u.protocol = 'https:';
+      return u.href;
+    } catch (e) { return null; }
+  }
+
+  function renderFallback(url) {
+    document.getElementById('app').hidden = true;
+    document.getElementById('empty').hidden = true;
+    var frame = document.createElement('iframe');
+    frame.className = 'fb-frame';
+    frame.title = 'Video';
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+    frame.setAttribute('allow', 'autoplay; fullscreen');
+    frame.setAttribute('style', 'width:100vw; height:100vh; border:none;');
+    frame.src = url;
+    document.body.appendChild(frame);
+  }
+
+  var src = resolveSource();
+  if (!src) {
+    var fbUrl = resolveFallback();
+    if (fbUrl) { renderFallback(fbUrl); return; }
+  }
+  if (!src) { showEmpty('No video link found', 'Open this page with a stream link in the address:'); return; }
+  if (typeof Artplayer === 'undefined') { showEmpty('Player failed to load', 'Check your internet connection and reload the page.'); return; }
+
+  var typeParam = (params.get('type') || '').toLowerCase();
+  var isFile = /\.(mp4|webm|mkv|mov|ogv|m4v)(\?|#|$)/i.test(src) || typeParam === 'mp4' || typeParam === 'file';
+  var isHlsStream = typeParam === 'hls' || typeParam === 'm3u8' || (!isFile);
+
+  /* ------------------------------------------------------------------
+   * 4. Player
+   * ------------------------------------------------------------------ */
+  var art = null;
+  var hls = null;
+  var nativeHls = false;
+  var topTitle = (params.get('title') || '').trim();
+  if (topTitle) document.title = topTitle;
+
+  var ICON = {
+    quality: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 11H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11v6zm7-1c0 .55-.45 1-1 1h-.75v1.5h-1.5V15H14c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v4zm-3.5-.5h2v-3h-2v3z"/></svg>',
+    audio: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
+    subs: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z"/></svg>'
+  };
+
+  // Inside Telegram we use web-fullscreen (works in every Mini App webview) and
+  // ask Telegram to go fullscreen too. In regular browsers use native fullscreen.
+  var nativeFsOk = !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+  var useNativeFs = nativeFsOk && !inTelegram;
+
+  function whenReady(fn) {
+    if (art && art.isReady) fn();
+    else setTimeout(function () { whenReady(fn); }, 60);
+  }
+
+  var addedSettings = {};
+  function upsertSetting(cfg) {
+    whenReady(function () {
+      try {
+        if (addedSettings[cfg.name]) art.setting.update(cfg);
+        else { art.setting.add(cfg); addedSettings[cfg.name] = true; }
+      } catch (e) { console.warn('setting error', e); }
+    });
+  }
+
+  var langNames = null;
+  try { langNames = new Intl.DisplayNames([navigator.language || 'en'], { type: 'language' }); } catch (e) {}
+  function trackLabel(t, i) {
+    var name = t && t.name;
+    var lang = t && t.lang;
+    if (name && name !== lang) return name;
+    if (lang) {
+      try { var d = langNames && langNames.of(lang); if (d) return d; } catch (e) {}
+      return lang;
+    }
+    return name || ('Track ' + (i + 1));
+  }
+
+  function showError(message) {
+    whenReady(function () {
+      var host = art.template.$player;
+      var old = host.querySelector('.err');
+      if (old) old.remove();
+      var box = document.createElement('div');
+      box.className = 'err';
+      box.innerHTML = '<p></p><button type="button">Try again</button>';
+      box.querySelector('p').textContent = message;
+      box.querySelector('button').addEventListener('click', function () { location.reload(); });
+      ['click', 'touchstart', 'mousedown', 'pointerdown'].forEach(function (ev) {
+        box.addEventListener(ev, function (e) { e.stopPropagation(); }, { passive: true });
+      });
+      host.appendChild(box);
+    });
+  }
+
+  var badgeEl = null;
+  function updateQualityBadge() {
+    if (!badgeEl || !hls) return;
+    var lvl = hls.levels && hls.levels[hls.currentLevel];
+    if (!lvl) { badgeEl.hidden = true; return; }
+    var label = lvl.height ? lvl.height + 'p' : Math.round(lvl.bitrate / 1000) + ' kbps';
+    badgeEl.textContent = hls.autoLevelEnabled ? 'Auto (' + label + ')' : label;
+    badgeEl.hidden = false;
+  }
+
+  /* ---- HLS (Hls.js) ---- */
+  function playHls(video, url, a) {
+    art = a;
+
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls({
+        enableWorker: true,
+        startLevel: -1,
+        abrEwmaDefaultEstimate: 1500000,
+        maxBufferLength: 40,
+        backBufferLength: 90
+      });
+      var netRetries = 0, mediaRetries = 0, subsInit = false, subValue = -1;
+
+      function setupQuality() {
+        var levels = hls.levels || [];
+        var best = {};
+        levels.forEach(function (l, i) {
+          var key = l.height || 0;
+          if (best[key] === undefined || l.bitrate > levels[best[key]].bitrate) best[key] = i;
+        });
+        var heights = Object.keys(best).map(Number).sort(function (x, y) { return y - x; });
+        if (heights.length < 2) return;
+
+        var items = [{ html: 'Auto', value: -1, default: true }];
+        heights.forEach(function (h) {
+          var idx = best[h];
+          items.push({ html: h ? h + 'p' : Math.round(levels[idx].bitrate / 1000) + ' kbps', value: idx });
+        });
+        upsertSetting({
+          name: 'quality',
+          html: 'Quality',
+          icon: ICON.quality,
+          tooltip: 'Auto',
+          selector: items,
+          onSelect: function (item) {
+            hls.currentLevel = item.value;
+            updateQualityBadge();
+            return item.html;
+          }
+        });
+      }
+
+      function setupAudio() {
+        var tracks = hls.audioTracks || [];
+        if (tracks.length < 2) return;
+        var cur = hls.audioTrack >= 0 ? hls.audioTrack : 0;
+        upsertSetting({
+          name: 'audio',
+          html: 'Audio',
+          icon: ICON.audio,
+          tooltip: trackLabel(tracks[cur], cur),
+          selector: tracks.map(function (t, i) { return { html: trackLabel(t, i), value: i, default: i === cur }; }),
+          onSelect: function (item) { hls.audioTrack = item.value; return item.html; }
+        });
+      }
+
+      function setupSubtitles() {
+        var tracks = hls.subtitleTracks || [];
+        if (!tracks.length) return;
+        if (!subsInit) { subsInit = true; hls.subtitleDisplay = false; hls.subtitleTrack = -1; }
+        var items = [{ html: 'Off', value: -1, default: subValue === -1 }];
+        tracks.forEach(function (t, i) { items.push({ html: trackLabel(t, i), value: i, default: subValue === i }); });
+        upsertSetting({
+          name: 'subtitles',
+          html: 'Subtitles / CC',
+          icon: ICON.subs,
+          tooltip: subValue === -1 ? 'Off' : trackLabel(tracks[subValue], subValue),
+          selector: items,
+          onSelect: function (item) {
+            subValue = item.value;
+            if (item.value < 0) { hls.subtitleDisplay = false; hls.subtitleTrack = -1; }
+            else { hls.subtitleTrack = item.value; hls.subtitleDisplay = true; }
+            return item.html;
+          }
+        });
+      }
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function () {
+        setupQuality(); setupAudio(); setupSubtitles();
+        tryPlay();
+      });
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, setupAudio);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, setupSubtitles);
+      hls.on(Hls.Events.LEVEL_SWITCHED, updateQualityBadge);
+      hls.on(Hls.Events.FRAG_LOADED, function () { netRetries = 0; });
+
+      hls.on(Hls.Events.ERROR, function (_, data) {
+        if (!data || !data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          if (netRetries++ < 3) setTimeout(function () { hls.startLoad(); }, 1000 * netRetries);
+          else showError('The stream could not be loaded. Check the link and your connection.');
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (mediaRetries++ < 3) hls.recoverMediaError();
+          else showError('This stream could not be decoded on your device.');
+        } else {
+          showError('This stream cannot be played.');
+        }
+      });
+
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      a.on('destroy', function () { try { hls.destroy(); } catch (e) {} });
+
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      nativeHls = true;
+      video.src = url;
+      video.addEventListener('loadedmetadata', function () { setupNativeMenus(video); tryPlay(); }, { once: true });
+    } else {
+      showError('This browser cannot play HLS streams.');
+    }
+  }
+
+  /* Native HLS (Safari) audio + subtitle menus */
+  function setupNativeMenus(video) {
+    var at = video.audioTracks;
+    if (at && at.length > 1) {
+      var items = [], cur = 0, i;
+      for (i = 0; i < at.length; i++) { if (at[i].enabled) cur = i; }
+      for (i = 0; i < at.length; i++) items.push({ html: trackLabel({ name: at[i].label, lang: at[i].language }, i), value: i, default: i === cur });
+      upsertSetting({
+        name: 'audio', html: 'Audio', icon: ICON.audio, tooltip: items[cur].html, selector: items,
+        onSelect: function (item) {
+          for (var k = 0; k < at.length; k++) at[k].enabled = (k === item.value);
+          return item.html;
+        }
+      });
+    }
+    var tt = Array.prototype.filter.call(video.textTracks || [], function (t) { return t.kind === 'subtitles' || t.kind === 'captions'; });
+    if (tt.length) {
+      tt.forEach(function (t) { t.mode = 'disabled'; });
+      var subItems = [{ html: 'Off', value: -1, default: true }];
+      tt.forEach(function (t, k) { subItems.push({ html: trackLabel({ name: t.label, lang: t.language }, k), value: k }); });
+      upsertSetting({
+        name: 'subtitles', html: 'Subtitles / CC', icon: ICON.subs, tooltip: 'Off', selector: subItems,
+        onSelect: function (item) {
+          tt.forEach(function (t, k) { t.mode = (k === item.value) ? 'showing' : 'disabled'; });
+          return item.html;
+        }
+      });
+    }
+  }
+
+  /* ---- Create Artplayer ---- */
+  var opts = {
+    container: '#app',
+    url: src,
+    theme: '#ff0033',
+    volume: 1,
+    autoplay: false,
+    pip: true,
+    setting: true,
+    playbackRate: true,
+    aspectRatio: true,
+    flip: false,
+    screenshot: false,
+    fullscreen: useNativeFs,
+    fullscreenWeb: !useNativeFs,
+    autoOrientation: true,
+    miniProgressBar: true,
+    mutex: true,
+    backdrop: true,
+    playsInline: true,
+    fastForward: true,
+    gesture: true,
+    hotkey: true,
+    autoSize: false,
+    autoMini: false,
+    lang: 'en',
+    moreVideoAttr: { 'webkit-playsinline': true, playsInline: true, preload: 'auto' }
+  };
+  if (isHlsStream) {
+    opts.type = 'm3u8';
+    opts.customType = { m3u8: playHls };
+  }
+
+  art = new Artplayer(opts);
+  var video = art.video;
+  var player = art.template.$player;
+
+  function tryPlay() {
+    var p = video.play();
+    if (p && p.catch) {
+      p.catch(function (err) {
+        if (err && err.name === 'NotAllowedError') {
+          video.muted = true;
+          var q = video.play();
+          if (q && q.catch) q.catch(function () { video.muted = false; });
+          try { art.notice.show = 'Playing muted. Tap the speaker to unmute.'; } catch (e) {}
+        }
+      });
+    }
+  }
+
+  if (!isHlsStream) {
+    art.on('ready', tryPlay);
+    art.on('video:loadedmetadata', function () { setupNativeMenus(video); });
+  }
+  art.on('video:error', function () {
+    if (!hls) showError('This video could not be loaded. Check the link and try again.');
+  });
+
+  /* ---- Top bar (title + quality) ---- */
+  (function () {
+    var bar = document.createElement('div');
+    bar.className = 'topbar';
+    bar.innerHTML = '<div class="title"></div><div class="qbadge" hidden></div>';
+    bar.querySelector('.title').textContent = topTitle;
+    badgeEl = bar.querySelector('.qbadge');
+    player.appendChild(bar);
+  })();
+
+  /* ---- Telegram fullscreen sync ---- */
+  function tgFullscreen(on) {
+    if (!inTelegram || !tgAtLeast('8.0')) return;
+    try {
+      if (on) { if (!tg.isFullscreen) tg.requestFullscreen(); }
+      else if (tg.isFullscreen) tg.exitFullscreen();
+    } catch (e) {}
+  }
+  art.on('fullscreenWeb', tgFullscreen);
+  art.on('fullscreen', tgFullscreen);
+  if (inTelegram && tgAtLeast('8.0')) {
+    try {
+      tg.onEvent('fullscreenChanged', function () {
+        if (!tg.isFullscreen && art.fullscreenWeb) art.fullscreenWeb = false;
+      });
+    } catch (e) {}
+  }
+
+  /* ------------------------------------------------------------------
+   * 5. Mid-roll ads
+   * ------------------------------------------------------------------ */
+  var CIRC = 326.73;
+  var adEl = document.createElement('div');
+  adEl.className = 'ad';
+  adEl.hidden = true;
+  adEl.setAttribute('role', 'dialog');
+  adEl.setAttribute('aria-label', 'Advertisement');
+  adEl.innerHTML =
+    '<video class="ad-video" playsinline webkit-playsinline preload="auto" hidden></video>' +
+    '<div class="ad-card">' +
+      '<svg class="ring" viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg" cx="60" cy="60" r="52"/></svg>' +
+      '<div class="ring-num"></div>' +
+      '<div class="ad-sub">Sponsored break</div>' +
+    '</div>' +
+    '<button type="button" class="ad-skip" aria-disabled="true">Skip in 7s</button>' +
+    '<div class="ad-bar"><span class="ad-badge">Ad</span><span class="ad-timer"></span><button type="button" class="ad-link" hidden>Learn More / Visit Sponsor</button></div>' +
+    '<div class="ad-progress"><i></i></div>';
+  player.appendChild(adEl);
+
+  var adVideoEl = adEl.querySelector('.ad-video');
+  var adCard = adEl.querySelector('.ad-card');
+  var ringFg = adEl.querySelector('.ring-fg');
+  var ringNum = adEl.querySelector('.ring-num');
+  var adTimer = adEl.querySelector('.ad-timer');
+  var adProgress = adEl.querySelector('.ad-progress i');
+  var adLink = adEl.querySelector('.ad-link');
+  var skipBtn = adEl.querySelector('.ad-skip');
+
+  // Sponsor button: opens outside the player (new window / Telegram external link)
+  adLink.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var target = CONFIG.adClickUrl;
+    if (!target) return;
+    try {
+      if (inTelegram && tg && tg.openLink) tg.openLink(target);
+      else window.open(target, '_blank', 'noopener');
+    } catch (err) { window.open(target, '_blank', 'noopener'); }
+  });
+
+  skipBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (skipBtn.classList.contains('ready')) endAd();   // skip: close ad, resume main video
+  });
+
+  // Keep every tap/click inside the ad from reaching the player underneath
+  ['click', 'dblclick', 'touchstart', 'touchend', 'mousedown', 'pointerdown'].forEach(function (ev) {
+    adEl.addEventListener(ev, function (e) { e.stopPropagation(); }, { passive: true });
+  });
+  adEl.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); });
+
+  // Block hotkeys (space, arrows, ...) while an ad is on screen
+  window.addEventListener('keydown', function (e) {
+    if (!adActive || e.ctrlKey || e.metaKey || e.altKey || e.key === 'F5') return;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }, true);
+
+  var adActive = false;
+  var adMode = 'card';    // 'video' while a real ad video is playing, otherwise 'card'
+  var adHls = null;
+  var adTicker = null;
+  var adElapsed = 0;      // visible time since the ad started (ms)
+  var adLast = 0;
+  var served = {};        // ad point (seconds) -> true once played or passed
+
+  function pointsDue(t) {
+    return adPoints.filter(function (p) { return p <= t && !served[p]; });
+  }
+
+  function checkAds() {
+    if (adActive || video.seeking || video.paused || video.ended) return;
+    var due = pointsDue(video.currentTime);
+    if (!due.length) return;
+    // Seek guard: every point already passed is marked served, so rewinding or
+    // skipping around never repeats an ad. One ad plays per trigger.
+    due.forEach(function (p) { served[p] = true; });
+    startAd();
+  }
+
+  function showAdCard() {
+    adMode = 'card';
+    adVideoEl.hidden = true;
+    adCard.hidden = false;
+  }
+
+  function startAd() {
+    adActive = true;
+    try { art.setting.show = false; } catch (e) {}
+    try { if (document.pictureInPictureElement) document.exitPictureInPicture(); } catch (e) {}
+    video.pause();
+
+    adElapsed = 0;
+    adLast = performance.now();
+    skipBtn.classList.remove('ready');
+    skipBtn.setAttribute('aria-disabled', 'true');
+    adLink.hidden = !CONFIG.adClickUrl;
+
+    var url = CONFIG.adVideo;
+    if (url) {
+      adMode = 'video';
+      adCard.hidden = true;
+      adVideoEl.hidden = false;
+      adVideoEl.muted = false;
+      adVideoEl.onended = endAd;          // ad finished on its own: close and resume
+      adVideoEl.onerror = showAdCard;
+      if (/\.m3u8(\?|#|$)/i.test(url) && window.Hls && Hls.isSupported()) {
+        adHls = new Hls();
+        adHls.on(Hls.Events.ERROR, function (_, d) { if (d && d.fatal) showAdCard(); });
+        adHls.loadSource(url);
+        adHls.attachMedia(adVideoEl);
+      } else {
+        adVideoEl.src = url;
+      }
+      var p = adVideoEl.play();
+      if (p && p.catch) {
+        p.catch(function () {
+          adVideoEl.muted = true;
+          var q = adVideoEl.play();
+          if (q && q.catch) q.catch(showAdCard);
+        });
+      }
+    } else {
+      showAdCard();
+    }
+
+    renderAd();
+    adEl.hidden = false;
+    adTicker = setInterval(tickAd, 200);
+  }
+
+  function adTotalMs() {
+    if (adMode === 'video') {
+      var d = adVideoEl.duration;
+      if (isFinite(d) && d > 0) return d * 1000;
+    }
+    return BUILTIN_AD_SEC * 1000;
+  }
+
+  function renderAd() {
+    var total = adTotalMs();
+    var pos = adMode === 'video' ? adVideoEl.currentTime * 1000 : adElapsed;
+    var frac = Math.max(0, Math.min(1, pos / total));
+    var left = Math.max(0, Math.ceil((total - pos) / 1000));
+    adTimer.textContent = 'Ad ends in: ' + left + 's';
+    ringNum.textContent = left;
+    ringFg.style.strokeDashoffset = (CIRC * frac).toFixed(1);
+    adProgress.style.width = (frac * 100).toFixed(1) + '%';
+
+    var skipLeft = Math.ceil(CONFIG.skipAfter - adElapsed / 1000);
+    if (skipLeft > 0) {
+      skipBtn.textContent = 'Skip in ' + skipLeft + 's';
+    } else if (!skipBtn.classList.contains('ready')) {
+      skipBtn.textContent = 'Skip Ad \u23E9';
+      skipBtn.classList.add('ready');
+      skipBtn.setAttribute('aria-disabled', 'false');
+    }
+  }
+
+  function tickAd() {
+    var now = performance.now();
+    var dt = Math.min(now - adLast, 400);
+    adLast = now;
+    if (!document.hidden) adElapsed += dt;   // time away from the page does not count
+    renderAd();
+    var limit = adTotalMs() + (adMode === 'video' ? 8000 : 0);   // safety net if a video ad stalls
+    if (adElapsed >= limit) endAd();
+  }
+
+  function endAd() {
+    if (!adActive) return;
+    clearInterval(adTicker);
+    adTicker = null;
+    adVideoEl.onended = null;
+    adVideoEl.onerror = null;
+    if (adHls) { try { adHls.destroy(); } catch (e) {} adHls = null; }
+    try { adVideoEl.pause(); adVideoEl.removeAttribute('src'); adVideoEl.load(); } catch (e) {}
+    adEl.hidden = true;
+    adActive = false;
+    var p = video.play();               // main video resumes immediately
+    if (p && p.catch) p.catch(function () {});
+  }
+
+  // If anything tries to start the main video during an ad, stop it again
+  video.addEventListener('play', function () { if (adActive) video.pause(); });
+  video.addEventListener('timeupdate', checkAds);
+  video.addEventListener('seeked', checkAds);
+  video.addEventListener('playing', checkAds);
+
+  // Remote ad config: load now, then refresh every 5 minutes
+  loadRemoteConfig();
+  setInterval(loadRemoteConfig, 300000);
+
+})();
+</script>
+</body>
+</html>
